@@ -1,4 +1,4 @@
-const { spawn } = require("child_process");
+const { spawn, exec } = require("child_process");
 const fs = require("fs");
 const express = require("express");
 const cors = require("cors");
@@ -57,19 +57,19 @@ app.post("/run", (req, res) => {
             });
           }
 
-          const child = spawn(
-            "docker",
-            [
-              "run",
-              "--mount",
-              `type=bind,source=${process.cwd()}/code,target=/app/code`,
-              "code-sandbox",
-              "/app/code-execution.sh",
-            ],
-            {
-              timeout: 5000,
-            },
-          );
+          const child = spawn("docker", [
+            "run",
+            "--mount",
+            `type=bind,source=${process.cwd()}/code,target=/app/code`,
+            "code-sandbox",
+            "/app/code-execution.sh",
+          ]);
+          let timedOut = false;
+          const timeout = setTimeout(function () {
+            child.kill();
+            exec("docker stop $(docker ps -a -q)");
+            timedOut = true;
+          }, 2000);
 
           let output = [];
 
@@ -82,22 +82,24 @@ app.post("/run", (req, res) => {
           });
 
           child.on("close", (code) => {
+            clearTimeout(timeout);
+            exec("docker rm -f $(docker ps -a -q)");
             const files = fs.readdirSync(process.cwd() + "/code");
             files.forEach((file) => {
               fs.unlinkSync(process.cwd() + "/code/" + file);
             });
             const outputText = output.join("");
             console.log("exited: " + code);
-            if (code == 255) {
-              return res.send({
-                error: "timeout",
-                message:
-                  "Your code ran for too long. Please modify your code and try running it again.",
-              });
-            } else if (code == 0) {
+            if (code == 0) {
               return res.send({
                 message: "Your code ran successfully.",
                 output: outputText,
+              });
+            } else if (timedOut) {
+              return res.status(400).send({
+                error: "timeout",
+                message:
+                  "Your code ran for too long. Please modify your code and try running it again.",
               });
             } else {
               return res.send({
